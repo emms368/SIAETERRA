@@ -1,0 +1,569 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Simulación Impacto Meteorito — Trayectoria y Daños Escalados</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link href="https://cdn.jsdelivr.net/npm/cesium@1.113/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/cesium@1.113/Build/Cesium/Cesium.js"></script>
+  <style>
+    html, body, #cesiumContainer { width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden; background:#000; }
+    #ui {
+      position: absolute; top: 10px; left: 10px; z-index: 6;
+      width: 380px; background: rgba(18,18,18,0.95); color: #fff; padding: 12px; border-radius: 8px;
+      font-family: sans-serif; font-size: 13px;
+    }
+    label { display:block; margin-top:6px; }
+    input[type=number] { width:100%; }
+    .button { margin-top:8px; width:100%; padding:8px; border:none; border-radius:6px; background:#357edd; color:#fff; cursor:pointer; }
+    .small { font-size:12px; color:#ddd; margin-top:6px; }
+    .badge { display:inline-block; padding:3px 6px; background:#222; border-radius:6px; color:#9fd; margin-top:6px; }
+    #popInfo { margin-top:8px; background:rgba(255,255,255,0.03); padding:8px; border-radius:6px; font-size:13px; }
+    #extinct_overlay { position:absolute; top:0; left:0; width:100%; height:100%; display:flex; align-items:center; justify-content:center; pointer-events:none; z-index:9999; }
+    /* Overlay token styles */
+    #tokenOverlay {
+      position: absolute;
+      left: 0; top: 0; width: 100%; height: 100%;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(0,0,0,0.85); z-index: 99999; color: #fff;
+      font-family: sans-serif;
+    }
+    #tokenBox {
+      width: 420px; background: #0f0f12; padding: 18px; border-radius: 10px; box-shadow: 0 8px 30px rgba(0,0,0,0.8);
+    }
+    #tokenBox h2 { margin: 0 0 8px 0; font-size: 18px; color: #ffd; }
+    #tokenBox p { margin:0 0 12px 0; color:#ccc; font-size:13px; }
+    #ionTokenInput { width:100%; padding:8px; border-radius:6px; border:1px solid #222; background:#071017; color:#fff; }
+    #startBtn { margin-top:10px; width:100%; padding:10px; border-radius:6px; border:none; background:#2ca35a; color:#fff; cursor:pointer; font-weight:600; }
+    #tokenNote { margin-top:8px; font-size:12px; color:#bbb; }
+  </style>
+</head>
+<body>
+  <div id="cesiumContainer"></div>
+
+  <!-- TOKEN OVERLAY: el usuario debe introducir su propio token aqui -->
+  <div id="tokenOverlay" aria-hidden="false">
+    <div id="tokenBox" role="dialog" aria-modal="true" aria-labelledby="tokenTitle">
+      <h2 id="tokenTitle">Introduce tu Cesium Ion Access Token</h2>
+      <p>Por seguridad no se utiliza ningún token incrustado. Por favor pega tu <strong>Cesium Ion Access Token</strong> y pulsa <em>Iniciar</em> para ejecutar la simulación.</p>
+      <input id="ionTokenInput" type="text" placeholder="Tu Cesium Ion Access Token" autocapitalize="off" autocomplete="off" />
+      <button id="startBtn">Iniciar</button>
+      <div id="tokenNote">Si no tienes token, créalo en https://cesium.com/ion/ → Sign up / Access Tokens.</div>
+    </div>
+  </div>
+
+  <div id="ui" aria-hidden="false">
+    <strong>Simulación de impacto (Cesium) — Trayectoria y daños</strong>
+    <div class="small">Ajusta parámetros y pulsa <em>Simular impacto</em>. La trayectoria se dibuja y el daño escala con el tamaño/energía.</div>
+
+    <label>Latitud (°) <input id="lat" type="number" value="0" step="0.1"></label>
+    <label>Longitud (°) <input id="lon" type="number" value="0" step="0.1"></label>
+    <label>Diámetro del meteoro (m) <input id="diam" type="number" value="50" step="1"></label>
+    <label>Densidad (kg/m³) <input id="dens" type="number" value="3000" step="10"></label>
+    <label>Velocidad (km/s) <input id="vel" type="number" value="20" step="0.1"></label>
+    <label>Ángulo de entrada (°) <input id="angle" type="number" value="45" step="1"></label>
+    <label>Radio de interés para sismos (km) <input id="quakeRadius" type="number" value="500" step="10"></label>
+
+    <button id="simBtn" class="button" disabled>Simular impacto</button>
+    <button id="resetBtn" class="button" style="background:#666;" disabled>Reset</button>
+
+    <div id="popInfo" class="small">
+      <div>Población mundial (por defecto): <span id="popBefore" class="badge">8,000,000,000</span></div>
+      <div>Población estimada después del impacto: <span id="popAfter" class="badge">—</span></div>
+      <div id="popDetail" style="margin-top:6px;color:#cfc;"></div>
+      <div id="damageCat" style="margin-top:6px;color:#ffd"></div>
+    </div>
+
+    <div id="info" class="small"></div>
+  </div>
+
+  <script>
+  (function(){
+    // Elementos del overlay
+    const tokenOverlay = document.getElementById('tokenOverlay');
+    const ionTokenInput = document.getElementById('ionTokenInput');
+    const startBtn = document.getElementById('startBtn');
+
+    // Habilita Enter para enviar
+    ionTokenInput.addEventListener('keydown', (e)=> {
+      if(e.key === 'Enter') startBtn.click();
+    });
+
+    startBtn.addEventListener('click', ()=> {
+      const token = ionTokenInput.value.trim();
+      if(!token){
+        alert('Por favor pega tu Cesium Ion Access Token para continuar.');
+        ionTokenInput.focus();
+        return;
+      }
+      // Oculta overlay y arranca la app con el token proporcionado
+      tokenOverlay.style.display = 'none';
+      try {
+        initAppWithToken(token);
+      } catch (err) {
+        console.error('Error iniciando la aplicación:', err);
+        alert('Error iniciando la aplicación. Mira la consola para más detalles.');
+        tokenOverlay.style.display = 'flex';
+      }
+    });
+
+    // Si el usuario recarga y ya había metido token en el campo del navegador, no auto-iniciar por privacidad.
+    // Llamada principal que inicializa el viewer y toda la lógica, recibe el token del usuario.
+    window.initAppWithToken = function(ION_TOKEN) {
+      if(!ION_TOKEN || typeof ION_TOKEN !== 'string') throw new Error('Token inválido.');
+      Cesium.Ion.defaultAccessToken = ION_TOKEN;
+
+      // ---------- CONSTANTES ----------
+      const WORLD_POP_DEFAULT = 8_000_000_000;
+      const EARTH_LAND_KM2 = 148_940_000; // km2 (aprox)
+      const URBAN_FRACTION = 0.55;
+      const PLANETARY_ANNIHILATION_MT = 5e6; // umbral extremo
+
+      // ---------- Viewer ----------
+      let terrainProvider;
+      try {
+        terrainProvider = Cesium.createWorldTerrain ? Cesium.createWorldTerrain() : new Cesium.EllipsoidTerrainProvider();
+      } catch(e){
+        console.warn('No se pudo crear WorldTerrain, usando ellipsoid.', e);
+        terrainProvider = new Cesium.EllipsoidTerrainProvider();
+      }
+
+      const viewer = new Cesium.Viewer('cesiumContainer', {
+        terrainProvider,
+        timeline: true,
+        animation: true,
+        baseLayerPicker: true
+      });
+
+      viewer.scene.screenSpaceCameraController.maximumZoomDistance = 3e9;
+      viewer.scene.globe.enableLighting = true;
+
+      // UI refs
+      const infoDiv = document.getElementById('info');
+      const popBeforeEl = document.getElementById('popBefore');
+      const popAfterEl = document.getElementById('popAfter');
+      const popDetailEl = document.getElementById('popDetail');
+      const damageCatEl = document.getElementById('damageCat');
+      popBeforeEl.innerText = WORLD_POP_DEFAULT.toLocaleString('es-ES');
+
+      const sleep = ms => new Promise(r=>setTimeout(r,ms));
+      const toRad = x => x*Math.PI/180;
+      const showInfo = (html) => { infoDiv.innerHTML = html; };
+
+      // meteor inicial
+      const METEOR_ID = 'meteor';
+      let meteorEntity = viewer.entities.add({
+        id: METEOR_ID,
+        position: Cesium.Cartesian3.fromDegrees(0,0,500000),
+        ellipsoid: { radii: new Cesium.Cartesian3(800,800,800), material: Cesium.Color.ORANGE }
+      });
+
+      // ---------- Estimación crater (escala por tamaño + velocidad) ----------
+      function estimateCrater(d_m, dens, vel_kms, angle){
+        const v = vel_kms * 1000;
+        const mass = Math.PI/6 * Math.pow(d_m,3) * dens;
+        const E = 0.5 * mass * v * v; // J
+        const Mt = E / 4.184e15;
+        const K = 0.05;
+        const angleFactor = Math.max(0.1, Math.sin(toRad(angle)));
+        let D_final_km = K * Math.pow(d_m, 0.78) * Math.pow(vel_kms, 0.44) * Math.pow(angleFactor, 0.33) / 1000;
+        if(d_m < 10) D_final_km *= 0.8;
+        if(Mt > 1e3) D_final_km *= Math.pow(Mt/1e3, 0.15);
+        const D_final_m = D_final_km * 1000;
+        const depth_m = Math.max(1, D_final_m * 0.12);
+        return { E, Mt, diamKm: D_final_km, diamMeters: D_final_m, depth: depth_m };
+      }
+
+      // ---------- Categoría de daño basada en Mt (escala continua) ----------
+      function damageCategory(Mt){
+        if(Mt < 1e-4) return { cat: 'Micro', desc: 'Explosión atmosférica pequeña; daño mínimo local.', severity: 0.02 };
+        if(Mt < 1e-2) return { cat: 'Pequeño', desc: 'Cráter pequeño; daños locales (edificios cercanos).', severity: 0.08 };
+        if(Mt < 1) return { cat: 'Local', desc: 'Daños locales significativos; incendios y sismos inducidos.', severity: 0.25 };
+        if(Mt < 100) return { cat: 'Regional', desc: 'Daños regionales: ciudades, infraestructura y clima local afectado.', severity: 0.55 };
+        if(Mt < 1e4) return { cat: 'Continental/Global', desc: 'Polvo y cambios climáticos severos; crisis global.', severity: 0.85 };
+        if(Mt >= 1e4 && Mt < PLANETARY_ANNIHILATION_MT) return { cat: 'Catastrófico Global', desc: 'Efectos planetarios masivos; supervivencia reducida.', severity: 0.98 };
+        return { cat: 'Aniquilación Planetaria', desc: 'Energía extrema: destrucción total o casi total.', severity: 1.0 };
+      }
+
+      // ---------- Trayectoria: crea polyline 3D y posiciona meteor en SampledPositionProperty ----------
+      function createTrajectoryAndAnimate(meteorEntity, startLon, startLat, startAlt, impactLon, impactLat, impactAlt, durationSec=4.4){
+        const samples = [];
+        const now = Cesium.JulianDate.now();
+        const steps = 30;
+        for(let i=0;i<=steps;i++){
+          const t = i/steps;
+          const lon = startLon + (impactLon - startLon) * t;
+          const lat = startLat + (impactLat - startLat) * t;
+          const alt = startAlt * (1 - t) + impactAlt * t + Math.sin(Math.PI * t) * Math.max(0, startAlt*0.2);
+          const time = Cesium.JulianDate.addSeconds(now, Math.round(t * durationSec), new Cesium.JulianDate());
+          const cart = Cesium.Cartesian3.fromDegrees(lon, lat, alt);
+          samples.push({ time, cart });
+        }
+
+        const posProp = new Cesium.SampledPositionProperty();
+        samples.forEach(s => posProp.addSample(s.time, s.cart));
+
+        meteorEntity.position = posProp;
+
+        const polyId = 'traj_poly_' + Date.now();
+        const polyPositions = samples.map(s => s.cart);
+        viewer.entities.add({
+          id: polyId,
+          polyline: {
+            positions: polyPositions,
+            width: 3,
+            material: new Cesium.PolylineGlowMaterialProperty({
+              glowPower: 0.15,
+              color: Cesium.Color.ORANGE.withAlpha(0.95)
+            })
+          }
+        });
+
+        return Cesium.JulianDate.addSeconds(now, Math.round(durationSec), new Cesium.JulianDate());
+      }
+
+      // ---------- Explosion visual (partículas + anillo) ----------
+      function createExplosionVisual(lat, lon, diamMeters, Mt){
+        const energyScale = Math.min(1, Math.log10(Math.max(1, Mt)) / 6);
+        const particles = [];
+        const start = Date.now();
+        const pxCount = Math.round(20 + Math.min(200, diamMeters / 5 + energyScale*300));
+        for(let i=0;i<pxCount;i++){
+          const az = Math.random()*360;
+          const r0 = Math.random() * (Math.max(0.5, diamMeters/1000));
+          const height0 = 500 + Math.random()*200000;
+          const lonp = lon + ( (r0 * Math.cos(toRad(az))) / (111) );
+          const latp = lat + ( (r0 * Math.sin(toRad(az))) / (111 * Math.cos(toRad(lat))) );
+          const ent = viewer.entities.add({
+            position: Cesium.Cartesian3.fromDegrees(lonp, latp, height0),
+            billboard: {
+              image: (()=>{ const c=document.createElement('canvas'); c.width=c.height=48; const ctx=c.getContext('2d');
+                const g=ctx.createRadialGradient(24,24,1,24,24,24); g.addColorStop(0,'rgba(255,255,210,1)'); g.addColorStop(0.25,'rgba(255,160,40,0.95)'); g.addColorStop(0.6,'rgba(180,40,10,0.75)'); g.addColorStop(1,'rgba(60,10,0,0.08)'); ctx.fillStyle=g; ctx.fillRect(0,0,48,48); return c; })(),
+              scale: 0.8 + Math.random()*1.6,
+              color: Cesium.Color.WHITE.withAlpha(0.95),
+              verticalOrigin: Cesium.VerticalOrigin.CENTER
+            }
+          });
+          particles.push(ent);
+        }
+
+        const ring = viewer.entities.add({
+          id: `expl_ring_${Date.now()}`,
+          position: Cesium.Cartesian3.fromDegrees(lon, lat, 0),
+          ellipse: {
+            semiMajorAxis: new Cesium.CallbackProperty(()=> {
+              const t = Math.min(1, (Date.now() - start) / 3500);
+              const final = Math.max(2000, Math.min(2.0e6, diamMeters*4 + Math.pow(Mt,0.33)*50000));
+              return 100 + t * final;
+            }, false),
+            semiMinorAxis: new Cesium.CallbackProperty(()=> {
+              const t = Math.min(1, (Date.now() - start) / 3500);
+              const final = Math.max(2000, Math.min(2.0e6, diamMeters*4 + Math.pow(Mt,0.33)*50000));
+              return 100 + t * final;
+            }, false),
+            material: new Cesium.ImageMaterialProperty({
+              image:(()=>{ const c=document.createElement('canvas'); c.width=c.height=256; const ctx=c.getContext('2d');
+                const g=ctx.createRadialGradient(128,128,10,128,128,128); g.addColorStop(0,'rgba(255,220,140,0.0)'); g.addColorStop(0.6,'rgba(255,110,20,0.24)'); g.addColorStop(1,'rgba(255,30,0,0.06)'); ctx.fillStyle=g; ctx.fillRect(0,0,256,256); return c; })(),
+              transparent:true
+            }),
+            height: 1
+          }
+        });
+
+        setTimeout(()=>{ particles.forEach(p=> viewer.entities.remove(p)); try{ viewer.entities.remove(ring); }catch(e){} }, 12000);
+      }
+
+      // ---------- Sismos inducidos (heurístico) ----------
+      function generateInducedEvents(lat, lon, quakeRadiusKm, Mt){
+        const features = [];
+        const baseN = Math.round(5 * Math.max(1, Math.pow(Mt, 0.22)));
+        const N = Math.min(600, Math.max(6, baseN));
+        for(let i=0;i<N;i++){
+          const mag = Math.max(1.0, Math.min(8.5, (Math.log10(Math.max(1,Mt)) * 1.5) + (Math.random()*1.4 - 0.7) + 2.0));
+          const r = Math.pow(Math.random(), 0.7) * quakeRadiusKm;
+          const theta = Math.random()*2*Math.PI;
+          const dLat = (r * Math.cos(theta)) / 111;
+          const dLon = (r * Math.sin(theta)) / (111 * Math.cos(toRad(lat)));
+          const lon0 = lon + dLon;
+          const lat0 = lat + dLat;
+          const depth = Math.max(1, Math.random()*60);
+          features.push({
+            type: "Feature",
+            properties: { mag },
+            geometry: { type: "Point", coordinates: [lon0, lat0, -depth*1000] }
+          });
+        }
+        return { type: "FeatureCollection", features };
+      }
+
+      // ---------- Mostrar sismos reales + inducidos (distinguir) ----------
+      function plotRealAndInduced(geojsonReal, geojsonInduced){
+        viewer.dataSources.removeAll();
+
+        if(geojsonReal && geojsonReal.features && geojsonReal.features.length){
+          Cesium.GeoJsonDataSource.load(geojsonReal, { clampToGround: true }).then(ds=>{
+            viewer.dataSources.add(ds);
+            ds.entities.values.forEach(e=>{
+              const mag = e.properties && e.properties.mag ? Number(e.properties.mag.getValue()) : 0;
+              e.point = new Cesium.PointGraphics({ pixelSize: Math.max(5, mag*3), color: Cesium.Color.CYAN.withAlpha(0.9) });
+              e.label = new Cesium.LabelGraphics({ text: mag ? `M${mag.toFixed(1)}` : '', font:'11px sans-serif', pixelOffset:new Cesium.Cartesian2(0,-10)});
+            });
+          });
+        }
+
+        if(geojsonInduced && geojsonInduced.features && geojsonInduced.features.length){
+          Cesium.GeoJsonDataSource.load(geojsonInduced, { clampToGround: true }).then(ds=>{
+            viewer.dataSources.add(ds);
+            ds.entities.values.forEach((e,i)=>{
+              const mag = e.properties && e.properties.mag ? Number(e.properties.mag.getValue()) : 0;
+              e.billboard = new Cesium.BillboardGraphics({
+                image: (()=>{ const c=document.createElement('canvas'); c.width=c.height=40; const ctx=c.getContext('2d'); ctx.beginPath(); ctx.arc(20,20,16,0,Math.PI*2); ctx.fillStyle='rgba(255,40,30,0.95)'; ctx.fill(); ctx.fillStyle='white'; ctx.font='12px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle'; if(mag) ctx.fillText(mag.toFixed(1),20,20); return c; })(),
+                scale: new Cesium.CallbackProperty(()=> 0.85 + 0.2*Math.abs(Math.sin(Date.now()/(300 + i*10))), false),
+                verticalOrigin: Cesium.VerticalOrigin.CENTER
+              });
+              e.label = new Cesium.LabelGraphics({ text:`ind M${mag.toFixed(1)}`, font:'11px sans-serif', pixelOffset:new Cesium.Cartesian2(0,-26)});
+            });
+          });
+        }
+      }
+
+      // ---------- Estimación de víctimas (más realista sobre tierra + urbano) ----------
+      function estimateCasualtiesMoreRealistic(worldPop, craterDiamM, quakeRadiusKm, Mt){
+        const craterAreaKm2 = Math.PI * Math.pow(craterDiamM/2000,2);
+        const quakeAreaKm2 = Math.PI * Math.pow(quakeRadiusKm,2);
+        const affectedKm2 = Math.min(EARTH_LAND_KM2, craterAreaKm2 + quakeAreaKm2);
+
+        const popOnLand = worldPop;
+        const popDensityLand = popOnLand / EARTH_LAND_KM2;
+        const URBAN_DENSITY_MULTIPLIER = 12;
+        const effectiveDensity = popDensityLand * ( (1 - URBAN_FRACTION) + URBAN_FRACTION * URBAN_DENSITY_MULTIPLIER );
+
+        const energyFactor = Math.log10(Math.max(1, Mt)) / 3.0;
+        const lethalityLocal = Math.min(0.99, Math.max(0.01, 0.25 * (1 + energyFactor)));
+
+        const immediateCasualties = Math.round(effectiveDensity * affectedKm2 * lethalityLocal);
+
+        let climateFraction = 0;
+        if(Mt > 1e3) climateFraction = Math.min(0.9, 0.0000009 * Mt);
+        const climateDeaths = Math.round(worldPop * climateFraction);
+
+        const total = Math.min(worldPop, immediateCasualties + climateDeaths);
+        const severity = Math.min(1, Mt / PLANETARY_ANNIHILATION_MT);
+
+        return { craterAreaKm2, quakeAreaKm2, affectedKm2, popDensityLand, effectiveDensity, lethalityLocal, immediateCasualties, climateDeaths, total, severity };
+      }
+
+      // ---------- Simulación completa (trayectoria + impacto + efectos) ----------
+      async function simulateImpact(lat, lon, diam, dens, vel, ang, quakeRadius){
+        showInfo('Preparando trayectoria y simulación...');
+        const startLat = lat + Math.sign(90 - lat) * 6.0;
+        const startLon = lon - 8.0;
+        const startAlt = 420000;
+        const impactAlt = 0;
+
+        const c = estimateCrater(diam, dens, vel, ang);
+        const Mt = c.Mt;
+
+        const impactTime = createTrajectoryAndAnimate(meteorEntity, startLon, startLat, startAlt, lon, lat, impactAlt, Math.max(3.6, Math.min(8, 4.4 * (diam/1000 + 0.1))));
+        viewer.clock.currentTime = Cesium.JulianDate.now();
+        viewer.trackedEntity = meteorEntity;
+
+        await sleep( Math.max(4200, 1000 * Math.min(9, 4.4 * (diam/1000 + 0.1))) );
+
+        (function createCraterVisual(){
+          const id = 'crater_vis';
+          if(viewer.entities.getById(id)) viewer.entities.removeById(id);
+          const seg = 128, radius = c.diamMeters/2;
+          const positions = [];
+          for(let i=0;i<seg;i++){
+            const theta = 2*Math.PI*i/seg;
+            const dx = radius*Math.cos(theta), dy = radius*Math.sin(theta);
+            const dLat = dy/111320, dLon = dx/(111320*Math.cos(toRad(lat)));
+            positions.push(Cesium.Cartesian3.fromDegrees(lon + dLon, lat + dLat, -Math.abs(c.depth)*0.9));
+          }
+          viewer.entities.add({
+            id,
+            polygon: {
+              hierarchy: new Cesium.PolygonHierarchy(positions),
+              perPositionHeight: true,
+              material: new Cesium.ImageMaterialProperty((()=>{ const cvs=document.createElement('canvas'); cvs.width=cvs.height=512; const ctx=cvs.getContext('2d'); const g=ctx.createRadialGradient(256,256,10,256,256,256); g.addColorStop(0,'rgba(80,80,80,1)'); g.addColorStop(0.6,'rgba(100,100,100,0.95)'); g.addColorStop(1,'rgba(30,30,30,0.72)'); ctx.fillStyle=g; ctx.fillRect(0,0,512,512); ctx.beginPath(); ctx.arc(256,256,240,0,Math.PI*2); ctx.lineWidth=18; ctx.strokeStyle='rgba(200,150,80,0.5)'; ctx.stroke(); return cvs; })()),
+              outline: true,
+              outlineColor: Cesium.Color.BLACK.withAlpha(0.7)
+            }
+          });
+
+          const rimPos = []; const rimR = radius*1.06;
+          for(let i=0;i<seg;i++){
+            const theta = 2*Math.PI*i/seg;
+            const dx = rimR*Math.cos(theta), dy=rimR*Math.sin(theta);
+            const dLat=dy/111320, dLon=dx/(111320*Math.cos(toRad(lat)));
+            rimPos.push(Cesium.Cartesian3.fromDegrees(lon + dLon, lat + dLat, 40));
+          }
+          viewer.entities.add({ id: id + '_rim', polygon:{ hierarchy: new Cesium.PolygonHierarchy(rimPos), perPositionHeight:true, material: Cesium.Color.BROWN.withAlpha(0.75) }});
+        })();
+
+        createExplosionVisual(lat, lon, c.diamMeters, Mt);
+        (function shock(){
+          const start = Date.now();
+          const damageRadiusKm = Math.min(20000, Math.max(2, 80 * Math.pow(Math.max(1, Mt), 0.33)));
+          const id = 'shock_' + Date.now();
+          viewer.entities.add({
+            id,
+            position: Cesium.Cartesian3.fromDegrees(lon, lat, 0),
+            ellipse: {
+              semiMajorAxis: new Cesium.CallbackProperty(()=> {
+                const t = Math.min(1, (Date.now() - start) / 7000);
+                return 100 + t * (damageRadiusKm*1000);
+              }, false),
+              semiMinorAxis: new Cesium.CallbackProperty(()=> {
+                const t = Math.min(1, (Date.now() - start) / 7000);
+                return 100 + t * (damageRadiusKm*1000);
+              }, false),
+              material: new Cesium.ColorMaterialProperty(Cesium.Color.ORANGE.withAlpha(0.18)),
+              height: 1
+            }
+          });
+        })();
+
+        const inducedGeo = generateInducedEvents(lat, lon, quakeRadius, Mt);
+        plotRealAndInduced({features:[]}, inducedGeo);
+
+        const estimation = estimateCasualtiesMoreRealistic(WORLD_POP_DEFAULT, c.diamMeters, quakeRadius, Mt);
+        const before = WORLD_POP_DEFAULT;
+        const casualties = estimation.total;
+        const after = Math.max(0, before - casualties);
+
+        popBeforeEl.innerText = before.toLocaleString('es-ES');
+        popAfterEl.innerText = after.toLocaleString('es-ES');
+        popDetailEl.innerHTML = `Diámetro cráter: ${Math.round(c.diamMeters).toLocaleString('es-ES')} m (${c.diamKm.toFixed(3)} km) • Profundidad ~ ${Math.round(c.depth)} m<br>
+          Área inmediata: ${estimation.affectedKm2.toFixed(0)} km² • Víctimas inmediatas: ${estimation.immediateCasualties.toLocaleString('es-ES')} • Secuelas climáticas: ${estimation.climateDeaths.toLocaleString('es-ES')}<br>
+          <strong>Total estimado:</strong> ${estimation.total.toLocaleString('es-ES')}`;
+
+        const cat = damageCategory(Mt);
+        damageCatEl.innerHTML = `<strong>Categoria daño:</strong> ${cat.cat} — ${cat.desc}`;
+
+        escalateVisualsBySeverity(lat, lon, c.diamMeters, estimation.severity);
+
+        // --- NUEVO: si severidad máxima, mostrar mensaje de POBLACIÓN EXTINTA ---
+        if(estimation.severity >= 1.0){
+          await sleep(800);
+          viewer.scene.globe.show = false;
+
+          const overlay = document.createElement('div');
+          overlay.id = 'extinct_overlay';
+          overlay.innerHTML = `
+            <div style="text-align:center; color:#fff; text-shadow:0 2px 18px rgba(0,0,0,0.8);">
+              <h1 style="color:#ff2222; font-size:56px; margin:0 0 8px;">🌍 POBLACIÓN EXTINTA 💥</h1>
+              <p style="font-size:20px; margin:0 0 12px;">El impacto ha sido suficientemente energético como para provocar la extinción de la población humana.</p>
+              <p style="font-size:18px; margin:0;">Población previa estimada: <strong>${WORLD_POP_DEFAULT.toLocaleString('es-ES')}</strong></p>
+            </div>
+          `;
+          document.body.appendChild(overlay);
+
+          popAfterEl.innerText = '0';
+          popDetailEl.innerHTML = `<strong>Población estimada tras el impacto: EXTINTA</strong>`;
+
+          const prev = document.getElementById('destroyText');
+          if(!prev){
+            const txt = document.createElement('div'); txt.id = 'destroyText'; txt.innerHTML = "<h1 style='color:#ff4444;text-align:center;margin-top:40vh;font-size:46px;'>🌍 Destrucción planetaria — supervivencia mínima</h1>";
+            txt.style.position='absolute'; txt.style.width='100%'; txt.style.pointerEvents='none';
+            document.body.appendChild(txt);
+          }
+        }
+
+        viewer.trackedEntity = undefined;
+      }
+
+      // ---------- Escalado visual por severidad ----------
+      function escalateVisualsBySeverity(lat, lon, diamMeters, severity){
+        viewer.entities.add({
+          id: `dust_${Date.now()}`,
+          position: Cesium.Cartesian3.fromDegrees(lon, lat, 0),
+          ellipsoid: {
+            radii: new Cesium.Cartesian3(diamMeters * (0.6 + severity*2.5), diamMeters * (0.6 + severity*2.5), 300000 + severity*1200000),
+            material: Cesium.Color.DARKGRAY.withAlpha(0.28 + 0.48*severity)
+          }
+        });
+
+        if(severity > 0.12){
+          const fires = Math.round(3 + severity*18);
+          for(let i=0;i<fires;i++){
+            const ang = Math.random()*360;
+            const distKm = 20 + Math.random()*800 * (0.4 + severity*4);
+            const ddLat = (distKm * Math.cos(toRad(ang))) / 111;
+            const ddLon = (distKm * Math.sin(toRad(ang))) / (111 * Math.cos(toRad(lat)));
+            viewer.entities.add({
+              id: `fire_${Date.now()}_${i}`,
+              position: Cesium.Cartesian3.fromDegrees(lon + ddLon, lat + ddLat, 0),
+              ellipse: {
+                semiMajorAxis: 10000 + distKm*100,
+                semiMinorAxis: 8000 + distKm*80,
+                material: Cesium.Color.fromBytes(200,60,20).withAlpha(0.12 + 0.3*severity)
+              }
+            });
+          }
+        }
+
+        if(severity > 0.6){
+          const fragCount = Math.round(10 + severity*80);
+          for(let i=0;i<fragCount;i++){
+            const az = Math.random()*360;
+            const r = (0.3 + Math.random()*3.0) * diamMeters;
+            const dLat = (r * Math.cos(toRad(az))) / 111320;
+            const dLon = (r * Math.sin(toRad(az))) / (111320 * Math.cos(toRad(lat)));
+            const ent = viewer.entities.add({
+              position: Cesium.Cartesian3.fromDegrees(lon + dLon, lat + dLat, 100000 + Math.random()*300000),
+              ellipsoid: { radii: new Cesium.Cartesian3(20000 + Math.random()*90000, 20000 + Math.random()*90000, 20000 + Math.random()*90000), material: Cesium.Color.fromRandom({alpha:1.0})}
+            });
+          }
+        }
+      }
+
+      // ---------- Eventos botones ----------
+      const simBtn = document.getElementById('simBtn');
+      const resetBtn = document.getElementById('resetBtn');
+      const latEl = document.getElementById('lat');
+      const lonEl = document.getElementById('lon');
+      const diamEl = document.getElementById('diam');
+      const densEl = document.getElementById('dens');
+      const velEl = document.getElementById('vel');
+      const angleEl = document.getElementById('angle');
+      const quakeRadiusEl = document.getElementById('quakeRadius');
+
+      // Habilitar botones ahora que la app ha inicializado con token
+      simBtn.disabled = false;
+      resetBtn.disabled = false;
+
+      simBtn.onclick = ()=> {
+        simulateImpact(
+          parseFloat(latEl.value || 0),
+          parseFloat(lonEl.value || 0),
+          parseFloat(diamEl.value || 0),
+          parseFloat(densEl.value || 0),
+          parseFloat(velEl.value || 0),
+          parseFloat(angleEl.value || 0),
+          parseFloat(quakeRadiusEl.value || 0)
+        );
+      };
+
+      resetBtn.onclick = ()=> {
+        viewer.entities.removeAll();
+        viewer.dataSources.removeAll();
+        viewer.scene.globe.show = true;
+        meteorEntity = viewer.entities.add({ id: METEOR_ID, position: Cesium.Cartesian3.fromDegrees(0,0,500000), ellipsoid: { radii: new Cesium.Cartesian3(800,800,800), material: Cesium.Color.ORANGE }});
+        showInfo('Escena reiniciada.');
+        popBeforeEl.innerText = WORLD_POP_DEFAULT.toLocaleString('es-ES');
+        popAfterEl.innerText = '—';
+        popDetailEl.innerHTML = '';
+        damageCatEl.innerHTML = '';
+        const txt = document.getElementById('destroyText'); if(txt) try{ document.body.removeChild(txt); }catch(e){}
+        const overlay = document.getElementById('extinct_overlay'); if(overlay) try{ document.body.removeChild(overlay); }catch(e){}
+      };
+
+      // Mensaje inicial
+      showInfo('Listo. Ajusta parámetros y presiona <strong>Simular impacto</strong>.');
+    }; // end initAppWithToken
+  })();
+  </script>
+</body>
+</html>
