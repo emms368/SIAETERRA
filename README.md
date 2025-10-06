@@ -1,4 +1,5 @@
 --ESPAÑOL--
+Archivo de Index
 1. Instalar Python 3 
 
 2. Inicia Sesión en Cesium
@@ -30,7 +31,7 @@ http://localhost:8000/
 
 
 --ENGLISH--
-
+Index file
 1. Install Python 3
 
 2. Log in to Cesium
